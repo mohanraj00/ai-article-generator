@@ -1,0 +1,5 @@
+{
+  "name": "Transcript to Article",
+  "description": "An application that transforms a raw audio transcript and accompanying screenshots into a polished, professional technical article formatted as a single static HTML file.",
+  "requestFramePermissions": []
+}
