@@ -79,6 +79,7 @@ const App: React.FC = () => {
     const [loading, setLoading] = useState<boolean>(false);
     const [loadingMessage, setLoadingMessage] = useState<string>('');
     const [generatedHtml, setGeneratedHtml] = useState<string>('');
+    const [generatedTitle, setGeneratedTitle] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
 
     const imagesRef = useRef<ImageFile[]>([]); // Ref to hold the latest images for unmount cleanup
@@ -170,6 +171,7 @@ const App: React.FC = () => {
             // Phase 2: Verification and Correction
             setLoadingMessage('Phase 2/4: Verifying content accuracy...');
             const { title, content: markdownContent } = await validateAndCorrectArticle(ai, transcript, initialArticle);
+            setGeneratedTitle(title);
             
             // This will hold either user-provided images or generated ones.
             let imagesForArticle: {
@@ -199,71 +201,75 @@ const App: React.FC = () => {
             let articleBodyHtml: string;
 
             if (imagesForArticle.length > 0) {
-                // Phase 3: Visual Analysis
-                setLoadingMessage('Phase 3/4: Analyzing images and planning layout...');
-                const imagePayload = imagesForArticle.map(img => ({ 
-                    filename: img.file.name, 
-                    base64: img.base64, 
-                    mimeType: img.file.type 
-                }));
-                
-                const placementStrategy: PlacementStrategy = await planImagePlacements(
-                    ai, 
-                    markdownContent, 
-                    imagePayload
-                );
-
-                // Convert base markdown to HTML
+                // Phase 3: Visual Analysis & Layout Planning
+                // First, parse markdown to HTML to get an accurate representation of content blocks
                 const baseHtml = marked.parse(markdownContent);
-
-                // Use DOMParser to inject images into the HTML structure
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(`<div>${baseHtml}</div>`, 'text/html');
                 const contentWrapper = doc.body.firstChild as HTMLElement;
 
                 if (contentWrapper) {
-                    const paragraphs = Array.from(contentWrapper.querySelectorAll('p'));
-                    const placementsByPara = new Map<number, typeof imagesForArticle>();
+                    const insertionPoints = Array.from(contentWrapper.querySelectorAll('p, h2, h3, h4, ul, ol, blockquote, pre'));
+                    // Create a text representation of the blocks for the AI, ensuring consistency
+                    const contentBlocksForAI = insertionPoints.map(el => el.textContent || '');
+
+                    setLoadingMessage('Phase 3/4: Analyzing images and planning layout...');
+                    const imagePayload = imagesForArticle.map(img => ({ 
+                        filename: img.file.name, 
+                        base64: img.base64, 
+                        mimeType: img.file.type 
+                    }));
                     
+                    const placementStrategy: PlacementStrategy = await planImagePlacements(
+                        ai, 
+                        contentBlocksForAI, // Pass the accurate block list
+                        imagePayload
+                    );
+
+                    // Now, inject images into the parsed document
+                    const placementsByIndex = new Map<number, typeof imagesForArticle>();
+                    const successfullyPlacedBodyImages = new Set<string>();
+
                     placementStrategy.placements.forEach(p => {
                         const imageFile = imagesForArticle.find(img => img.file.name === p.imageFilename);
                         if (imageFile) {
-                            if (!placementsByPara.has(p.afterParagraphIndex)) {
-                                placementsByPara.set(p.afterParagraphIndex, []);
+                            if (!placementsByIndex.has(p.afterParagraphIndex)) {
+                                placementsByIndex.set(p.afterParagraphIndex, []);
                             }
-                            placementsByPara.get(p.afterParagraphIndex)?.push(imageFile);
+                            placementsByIndex.get(p.afterParagraphIndex)?.push(imageFile);
                         }
                     });
 
-                    placementsByPara.forEach((imagesToPlace, paraIndex) => {
-                        if (paraIndex >= 0 && paraIndex < paragraphs.length) {
-                            const p = paragraphs[paraIndex];
+                    placementsByIndex.forEach((imagesToPlace, insertionIndex) => {
+                        if (insertionIndex >= 0 && insertionIndex < insertionPoints.length) {
+                            const anchorElement = insertionPoints[insertionIndex];
                             imagesToPlace.reverse().forEach(img => {
                                 const imgElement = doc.createElement('img');
                                 imgElement.src = `data:${img.file.type};base64,${img.base64}`;
                                 imgElement.alt = img.file.name;
                                 imgElement.className = 'body-image';
-                                p.after(imgElement);
+                                anchorElement.after(imgElement);
+                                successfullyPlacedBodyImages.add(img.file.name);
                             });
                         }
                     });
 
-                    const placedImageFilenames = new Set([
-                        placementStrategy.headerImageFilename, 
-                        ...placementStrategy.placements.map(p => p.imageFilename)
-                    ]);
-                    
-                    imagesForArticle.forEach(imageFile => {
-                        if (!placedImageFilenames.has(imageFile.file.name)) {
-                             console.warn(`Image '${imageFile.file.name}' was not placed, appending to the end.`);
-                             const imgElement = doc.createElement('img');
-                             imgElement.src = `data:${imageFile.file.type};base64,${imageFile.base64}`;
-                             imgElement.alt = imageFile.file.name;
-                             imgElement.className = 'body-image';
-                             contentWrapper.appendChild(imgElement);
+                    // Fallback for any body images that couldn't be placed
+                    placementStrategy.placements.forEach(placement => {
+                        if (!successfullyPlacedBodyImages.has(placement.imageFilename)) {
+                            const imageFile = imagesForArticle.find(img => img.file.name === placement.imageFilename);
+                            if (imageFile) {
+                                console.warn(`Image '${imageFile.file.name}' could not be placed contextually, appending to the end.`);
+                                const imgElement = doc.createElement('img');
+                                imgElement.src = `data:${imageFile.file.type};base64,${imageFile.base64}`;
+                                imgElement.alt = imageFile.file.name;
+                                imgElement.className = 'body-image';
+                                contentWrapper.appendChild(imgElement);
+                            }
                         }
                     });
                     
+                    // Place the header image at the beginning
                     const headerImage = imagesForArticle.find(img => img.file.name === placementStrategy.headerImageFilename);
                     if (headerImage) {
                         const headerImgElement = doc.createElement('img');
@@ -286,7 +292,7 @@ const App: React.FC = () => {
 
             // Phase 4: HTML Generation
             setLoadingMessage('Phase 4/4: Generating final HTML article...');
-            const finalHtml = generateHtmlArticle(articleContent);
+            const finalHtml = generateHtmlArticle(title, articleContent);
             setGeneratedHtml(finalHtml);
 
         } catch (err: any) {
@@ -325,6 +331,7 @@ const App: React.FC = () => {
         
         setTranscript('');
         setGeneratedHtml('');
+        setGeneratedTitle('');
         setError(null);
         setLoading(false);
         setLoadingMessage('');
@@ -357,6 +364,7 @@ const App: React.FC = () => {
                         loadingMessage={loadingMessage}
                         error={error}
                         generatedHtml={generatedHtml}
+                        generatedTitle={generatedTitle}
                         onReset={handleReset}
                     />
                 )}

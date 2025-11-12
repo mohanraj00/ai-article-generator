@@ -2,6 +2,45 @@ import { GoogleGenAI, Type } from '@google/genai';
 import type { Placement, PlacementStrategy } from '../types';
 
 /**
+ * A deterministic fallback function to create a sensible layout when the AI fails.
+ */
+function getProgrammaticPlacement(
+    images: { filename: string }[],
+    contentBlocks: string[],
+    headerImageFilenameOverride?: string
+): PlacementStrategy {
+    console.log("Executing programmatic image placement strategy.");
+    if (images.length === 0) {
+        return { headerImageFilename: '', placements: [] };
+    }
+
+    const headerImageFilename = headerImageFilenameOverride || images[0].filename;
+    const bodyImages = images.filter(img => img.filename !== headerImageFilename);
+    
+    if (bodyImages.length === 0) {
+        return { headerImageFilename, placements: [] };
+    }
+
+    const totalBlocks = contentBlocks.length;
+    const maxIndex = totalBlocks > 0 ? totalBlocks - 1 : 0;
+    
+    // Divide the article into N+1 sections for N body images
+    const step = totalBlocks / (bodyImages.length + 1);
+
+    const placements = bodyImages.map((image, index) => {
+        // Place image at the end of the (index + 1)-th section
+        const idealIndex = Math.round((index + 1) * step) -1;
+        return {
+            imageFilename: image.filename,
+            afterParagraphIndex: Math.max(0, Math.min(maxIndex, idealIndex))
+        };
+    });
+    
+    return { headerImageFilename, placements };
+}
+
+
+/**
  * Phase 1: Refines a raw transcript into a structured article object using Gemini.
  */
 export async function refineTranscript(ai: GoogleGenAI, transcript: string): Promise<{ title: string; content: string }> {
@@ -199,45 +238,45 @@ Output your answer as a valid JSON object with a single key "prompts" which is a
  */
 export async function planImagePlacements(
     ai: GoogleGenAI, 
-    articleMarkdown: string, 
+    contentBlocks: string[], 
     images: { filename: string; base64: string; mimeType: string }[]
 ): Promise<PlacementStrategy> {
     if (images.length === 0) {
         throw new Error("No images provided for placement planning.");
     }
 
-    // Get only the actual paragraphs for indexing, ignoring headers and empty lines.
-    const paragraphs = articleMarkdown.split('\n').filter(p => {
-        const trimmed = p.trim();
-        return trimmed !== '' && !trimmed.startsWith('#');
-    });
     const imageFilenames = images.map(img => img.filename).join(', ');
+    const indexedContent = contentBlocks
+        .map((block, index) => `[${index}]: ${block.substring(0, 300)}...`)
+        .join('\n');
 
-    const prompt = `You are an expert visual layout editor for a technical article. Your task is to analyze the provided article markdown and a set of images to create an optimal layout.
+    const prompt = `You are an expert visual layout editor for a technical article. Your task is to analyze the provided article content blocks and a set of images to create an optimal layout that is visually appealing and easy to read.
 
-You must determine two things:
-1.  Which single image is best suited to be the main "header image" for the article.
-2.  For all other images, determine the most contextually relevant paragraph to place each image after.
+CRITICAL INSTRUCTIONS:
+1.  **Select a Header Image**: Choose the single best image that represents the overall topic to be the main header image.
+2.  **Distribute Body Images Evenly**: Your primary goal is to place the remaining images throughout the article to break up long sections of text. A good layout has images spread out.
+3.  **STRICT RULE**: You MUST NOT cluster images together or place them all at the beginning of the article. For example, do not place multiple images after the same paragraph index. Aim for one image every few paragraphs.
+
+RULES FOR PLACEMENT:
+- The \`headerImageFilename\` must be the filename of your chosen header image.
+- All other images must be included in the \`placements\` array.
+- The \`afterParagraphIndex\` for each placement must be a ZERO-BASED index corresponding to the content block the image should follow.
+- Each \`afterParagraphIndex\` should be unique if possible.
 
 OUTPUT FORMAT:
-Your output MUST be a valid JSON object. Do not include any other text or markdown formatting. The structure should be:
+Your output MUST be a valid JSON object.
 {
   "headerImageFilename": "string",
   "placements": [
-    {
-      "imageFilename": "string",
-      "afterParagraphIndex": number
-    }
+    { "imageFilename": "string", "afterParagraphIndex": number }
   ]
 }
-- "headerImageFilename": The filename of the image chosen for the header.
-- "placements": An array of objects for all OTHER images.
-  - "imageFilename": The filename of the image.
-  - "afterParagraphIndex": The ZERO-BASED index of the CONTENT PARAGRAPH (ignoring headers) after which the image should be inserted. The highest possible index is ${paragraphs.length - 1}. Ensure the index is valid.
 
-ARTICLE MARKDOWN:
+The highest possible index for \`afterParagraphIndex\` is ${contentBlocks.length - 1}.
+
+ARTICLE CONTENT BLOCKS (INDEXED):
 ---
-${articleMarkdown}
+${indexedContent}
 ---
 
 AVAILABLE IMAGES:
@@ -245,7 +284,7 @@ AVAILABLE IMAGES:
 ${imageFilenames}
 ---
 
-Now, analyze the article and the following images, then provide the complete layout strategy in the specified JSON format.`;
+Now, analyze the article content and the following images, then provide the complete layout strategy in the specified JSON format, strictly following the distribution rules.`;
 
     const contentParts: any[] = [{ text: prompt }];
     images.forEach(image => {
@@ -254,7 +293,7 @@ Now, analyze the article and the following images, then provide the complete lay
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro', // Use a powerful model for complex multi-modal reasoning
+            model: 'gemini-2.5-pro',
             contents: { parts: contentParts },
             config: {
                 responseMimeType: "application/json",
@@ -279,56 +318,70 @@ Now, analyze the article and the following images, then provide the complete lay
             }
         });
 
-        const result = JSON.parse(response.text.trim()) as PlacementStrategy;
-        const maxIndex = paragraphs.length > 0 ? paragraphs.length - 1 : 0;
+        let result = JSON.parse(response.text.trim()) as PlacementStrategy;
         
         // --- Validation and Cleanup Logic ---
-        // Ensure the header image exists in the provided images
-        if (!images.some(img => img.filename === result.headerImageFilename)) {
-            console.warn(`Model returned a non-existent header image: '${result.headerImageFilename}'. Defaulting to the first image.`);
-            result.headerImageFilename = images[0].filename;
-        }
 
-        // Filter out any placements for the header image itself or non-existent images
-        result.placements = result.placements.filter(p => 
+        // 1. Validate header image
+        if (!images.some(img => img.filename === result.headerImageFilename)) {
+            console.warn(`Model returned a non-existent header image. Applying programmatic placement.`);
+            return getProgrammaticPlacement(images, contentBlocks);
+        }
+        
+        // 2. Filter placements to only include valid, non-header images
+        const bodyPlacements = result.placements.filter(p => 
             p.imageFilename !== result.headerImageFilename &&
             images.some(img => img.filename === p.imageFilename)
         );
 
-        // Validate and clamp placement indices to prevent out-of-bounds errors
-        result.placements.forEach(p => {
+        // 3. Sanity check for clustering
+        const indices = bodyPlacements.map(p => p.afterParagraphIndex);
+        const isClustered = () => {
+            if (indices.length < 2 || contentBlocks.length < 5) return false;
+            const maxIndex = indices.length > 0 ? Math.max(...indices) : 0;
+            if (maxIndex < Math.floor(contentBlocks.length * 0.25)) {
+                console.log("Clustering detected: all images in first 25%.");
+                return true;
+            }
+            const uniqueIndices = new Set(indices);
+            if (uniqueIndices.size <= Math.floor(indices.length / 2)) {
+                 console.log("Clustering detected: too many images share an index.");
+                return true;
+            }
+            return false;
+        };
+
+        if (isClustered()) {
+            console.warn("AI returned a clustered layout. Overriding with programmatic placement.");
+            return getProgrammaticPlacement(images, contentBlocks, result.headerImageFilename);
+        }
+
+        // 4. Final validation pass on the AI's (good) response
+        const maxIndex = contentBlocks.length > 0 ? contentBlocks.length - 1 : 0;
+        
+        bodyPlacements.forEach(p => {
             if (p.afterParagraphIndex < 0 || p.afterParagraphIndex > maxIndex) {
-                console.warn(`Model returned out-of-bounds index ${p.afterParagraphIndex} for '${p.imageFilename}'. Clamping to ${maxIndex}.`);
+                 console.warn(`Model returned out-of-bounds index ${p.afterParagraphIndex} for '${p.imageFilename}'. Clamping to ${maxIndex}.`);
                 p.afterParagraphIndex = maxIndex;
             }
         });
 
-        // Ensure all non-header images have a placement record
-        const placedImages = new Set(result.placements.map(p => p.imageFilename));
+        const placedImages = new Set(bodyPlacements.map(p => p.imageFilename));
         images.forEach(img => {
             if (img.filename !== result.headerImageFilename && !placedImages.has(img.filename)) {
-                console.warn(`Model did not provide a placement for '${img.filename}'. Adding it after the first paragraph.`);
-                result.placements.push({ imageFilename: img.filename, afterParagraphIndex: 0 });
+                console.warn(`Model did not provide a placement for '${img.filename}'. Adding it to the end.`);
+                bodyPlacements.push({ imageFilename: img.filename, afterParagraphIndex: maxIndex });
             }
         });
-
-        return result;
+        
+        return {
+            headerImageFilename: result.headerImageFilename,
+            placements: bodyPlacements
+        };
 
     } catch (e) {
         console.error(`Failed to generate image placement strategy via API:`, e);
-        // Fallback strategy if the API call fails catastrophically
-        console.log("Executing fallback image placement strategy.");
-        return {
-            headerImageFilename: images[0].filename,
-            placements: images.slice(1).map((image, index) => ({
-                imageFilename: image.filename,
-                // Distribute remaining images somewhat evenly throughout the article
-                afterParagraphIndex: Math.min(
-                    paragraphs.length - 1, 
-                    Math.floor((index + 1) * (paragraphs.length / (images.length || 1) ))
-                )
-            }))
-        };
+        return getProgrammaticPlacement(images, contentBlocks);
     }
 }
 
@@ -338,7 +391,7 @@ const ARTICLE_TEMPLATE = `
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generated Article</title>
+    <title><!-- ARTICLE_TITLE_HERE --></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -445,10 +498,12 @@ const ARTICLE_TEMPLATE = `
 `;
 
 /**
- * Phase 4: Injects the generated article content into a professional HTML template.
+ * Phase 4: Injects the generated article title and content into a professional HTML template.
  * This is a reliable, synchronous operation that avoids a fallible API call.
  */
-export function generateHtmlArticle(articleContent: string): string {
-    // Replace the placeholder in the template with the actual article content.
-    return ARTICLE_TEMPLATE.replace('<!-- ARTICLE_CONTENT_HERE -->', articleContent);
+export function generateHtmlArticle(title: string, articleContent: string): string {
+    // Replace placeholders in the template with the actual title and article content.
+    return ARTICLE_TEMPLATE
+        .replace('<!-- ARTICLE_TITLE_HERE -->', title)
+        .replace('<!-- ARTICLE_CONTENT_HERE -->', articleContent);
 }

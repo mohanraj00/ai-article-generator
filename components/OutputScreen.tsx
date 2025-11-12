@@ -8,6 +8,7 @@ interface OutputScreenProps {
     loadingMessage: string;
     error: string | null;
     generatedHtml: string;
+    generatedTitle: string;
     onReset: () => void;
 }
 
@@ -16,6 +17,7 @@ export const OutputScreen: React.FC<OutputScreenProps> = ({
     loadingMessage,
     error,
     generatedHtml,
+    generatedTitle,
     onReset,
 }) => {
     const [activeTab, setActiveTab] = useState<'html' | 'preview'>('preview');
@@ -35,7 +37,8 @@ export const OutputScreen: React.FC<OutputScreenProps> = ({
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'article.html';
+        const safeFilename = generatedTitle.replace(/[^a-z0-9-]/gi, ' ').trim().replace(/\s+/g, '-').toLowerCase();
+        a.download = `${safeFilename || 'article'}.html`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
