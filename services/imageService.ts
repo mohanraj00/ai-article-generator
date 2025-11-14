@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import type { Placement, PlacementStrategy } from '../types';
+import type { PlacementStrategy } from '../types';
 
 /**
  * A deterministic fallback function to create a sensible layout when the AI fails.
@@ -41,129 +41,6 @@ function getProgrammaticPlacement(
 
 
 /**
- * Phase 1: Refines a raw transcript into a structured article object using Gemini.
- */
-export async function refineTranscript(ai: GoogleGenAI, transcript: string, suggestedTitle?: string): Promise<{ title: string; content: string }> {
-    const titleInstruction = suggestedTitle
-        ? `1.  **Refine the Title**: A title has been suggested. Use it as a strong basis. Your tasks are to:
-        - Refine it for clarity, conciseness, and impact.
-        - Correct any spelling or grammatical errors.
-        - If the suggestion is good, use a polished version of it.
-        - If the suggestion is completely irrelevant to the transcript content, you MUST ignore it and generate a new, more appropriate title from scratch.`
-        : `1.  **Create a Title**: Generate a concise, informative, and engaging title for the article.`;
-    
-    const prompt = `Act as an expert technical writer and editor. Your task is to transform the following raw transcript into a polished, well-structured technical article.
-${suggestedTitle ? `\nSUGGESTED TITLE:\n---\n${suggestedTitle}\n---\n` : ''}
-Follow these instructions precisely:
-${titleInstruction}
-2.  **Filter "Chatter"**: Remove all conversational filler (e.g., "um," "uh," "like," "you know"), repeated words, and false starts.
-3.  **Preserve Meaning**: Do NOT alter the core meaning or omit any technical details from the original transcript. The goal is to clarify, not to rewrite the substance.
-4.  **Structure the Content**: Organize the article logically using Markdown subheadings (## for H2, ### for H3) to create clear sections and subsections.
-5.  **Ensure Readability**: Correct spelling, grammar, and punctuation. Ensure the final text flows naturally and is easy to read.
-
-OUTPUT FORMAT:
-Your output MUST be a valid JSON object. Do not include any other text or markdown formatting. The structure should be:
-{
-  "title": "Your Generated or Refined Article Title",
-  "content": "The full article content, formatted in Markdown with subheadings..."
-}
-
-RAW TRANSCRIPT:
----
-${transcript}
----`;
-
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    title: { type: Type.STRING },
-                    content: { type: Type.STRING }
-                },
-                required: ["title", "content"]
-            }
-        }
-    });
-    
-    const result = JSON.parse(response.text.trim());
-    return {
-        title: result.title || "Untitled Article",
-        content: result.content || ""
-    };
-}
-
-/**
- * Phase 2: Verifies and corrects the generated article against the original transcript.
- */
-export async function validateAndCorrectArticle(
-    ai: GoogleGenAI,
-    originalTranscript: string,
-    generatedArticle: { title: string; content: string }
-): Promise<{ title: string; content: string }> {
-    const prompt = `You are a meticulous fact-checker and editor. Your task is to verify a generated technical article against its original source transcript.
-
-You must identify and correct any of the following issues in the "Generated Article":
-1.  **Inaccuracies**: Any statement that contradicts the "Original Transcript".
-2.  **Hallucinations**: Any technical detail or information added to the article that is NOT present in the original transcript.
-3.  **Omissions**: Any critical technical detail or step from the transcript that was left out of the article.
-
-INSTRUCTIONS:
-- Read the "Original Transcript" carefully to understand the source of truth.
-- Compare the "Generated Article" against the transcript, line by line if necessary.
-- Correct any errors you find directly.
-- Ensure the final, corrected article remains well-structured and retains its title and Markdown formatting.
-- If no errors are found, return the original generated article unchanged.
-
-OUTPUT FORMAT:
-Your output MUST be a valid JSON object, identical in structure to the input.
-{
-  "title": "Corrected or Original Article Title",
-  "content": "The full, corrected article content in Markdown..."
-}
-
-ORIGINAL TRANSCRIPT:
----
-${originalTranscript}
----
-
-GENERATED ARTICLE TO VERIFY:
----
-Title: ${generatedArticle.title}
-
-Content:
-${generatedArticle.content}
----
-`;
-
-    const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    title: { type: Type.STRING },
-                    content: { type: Type.STRING }
-                },
-                required: ["title", "content"]
-            }
-        }
-    });
-
-    const result = JSON.parse(response.text.trim());
-    return {
-        title: result.title || generatedArticle.title, // Fallback to original title
-        content: result.content || generatedArticle.content // Fallback to original content
-    };
-}
-
-
-/**
  * Generates contextually relevant images for an article if none are provided.
  */
 export async function generateArticleImages(
@@ -175,7 +52,7 @@ export async function generateArticleImages(
     const ideasPrompt = `Based on the following article text, suggest ${numberOfImages} distinct and visually compelling image concepts that would enhance the article. One should be a suitable header image (landscape orientation). For each concept, provide a concise, descriptive prompt suitable for an AI image generation model.
 
 CRITICAL INSTRUCTIONS:
-- Each prompt in the 'prompts' array MUST be a simple, clean, plain-text string.
+- The value for the 'prompt' key MUST be a simple, clean, plain-text string.
 - DO NOT include any Markdown, code formatting (like backticks), or special control characters within the prompt strings. The prompts are for an image model and must be purely descriptive text.
 
 Article Text:
@@ -183,12 +60,14 @@ Article Text:
 ${refinedTranscript}
 ---
 
-Output your answer as a valid JSON object with a single key "prompts" which is an array of strings. Example:
+Output your answer as a valid JSON object. The root object should have a key "ideas", which is an array of objects. Each object in the array should have a single key "prompt".
+
+Example format:
 {
-  "prompts": [
-    "A detailed illustration of a computer motherboard with glowing circuits.",
-    "A programmer at a sunlit desk, focused on a screen displaying complex code.",
-    "An abstract visualization of data flowing through a network."
+  "ideas": [
+    { "prompt": "A detailed illustration of a computer motherboard with glowing circuits." },
+    { "prompt": "A programmer at a sunlit desk, focused on a screen displaying complex code." },
+    { "prompt": "An abstract visualization of data flowing through a network." }
   ]
 }`;
 
@@ -200,20 +79,27 @@ Output your answer as a valid JSON object with a single key "prompts" which is a
             responseSchema: {
                 type: Type.OBJECT,
                 properties: {
-                    prompts: {
+                    ideas: {
                         type: Type.ARRAY,
-                        items: { type: Type.STRING }
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                prompt: { type: Type.STRING }
+                            },
+                            required: ["prompt"]
+                        }
                     }
                 },
-                required: ["prompts"]
+                required: ["ideas"]
             }
         }
     });
     
-    const { prompts } = JSON.parse(ideasResponse.text.trim());
-    if (!prompts || !Array.isArray(prompts) || prompts.length === 0) {
+    const { ideas } = JSON.parse(ideasResponse.text.trim());
+    if (!ideas || !Array.isArray(ideas) || ideas.length === 0) {
         throw new Error("Could not generate image ideas from the transcript.");
     }
+    const prompts = ideas.map((idea: { prompt: string }) => idea.prompt);
 
     // 2. Generate each image based on the prompts.
     const generatedImages = await Promise.all(
@@ -395,127 +281,4 @@ Now, analyze the article content and the following images, then provide the comp
         console.error(`Failed to generate image placement strategy via API:`, e);
         return getProgrammaticPlacement(images, contentBlocks);
     }
-}
-
-const ARTICLE_TEMPLATE = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><!-- ARTICLE_TITLE_HERE --></title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --text-color: #333;
-            --bg-color: #fff;
-            --link-color: #007bff;
-            --border-color: #e0e0e0;
-            --header-bg: #f8f9fa;
-        }
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --text-color: #e0e0e0;
-                --bg-color: #121212;
-                --link-color: #66b2ff;
-                --border-color: #444;
-                --header-bg: #1e1e1e;
-            }
-        }
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.7;
-            margin: 0;
-            padding: 0;
-            color: var(--text-color);
-            background-color: var(--bg-color);
-            text-rendering: optimizeLegibility;
-        }
-        .container {
-            max-width: 800px;
-            margin: 2rem auto;
-            padding: 0 1rem;
-        }
-        .article-header {
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .header-image {
-            width: 100%;
-            max-height: 400px;
-            object-fit: cover;
-            border-radius: 8px;
-            margin-bottom: 1.5rem;
-        }
-        h1, h2, h3 {
-             line-height: 1.3;
-             margin-top: 2.5rem;
-             margin-bottom: 1rem;
-             font-weight: 700;
-        }
-        h1 {
-            font-size: 2.5rem;
-            margin-top: 0;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.5rem;
-        }
-        h2 {
-            font-size: 1.8rem;
-        }
-        h3 {
-            font-size: 1.4rem;
-        }
-        p, ul, ol {
-            margin-bottom: 1.5rem;
-            font-size: 1.1rem;
-            color: var(--text-color);
-        }
-        .body-image {
-            display: block;
-            max-width: 100%;
-            height: auto;
-            margin: 2.5rem auto;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        a {
-            color: var(--link-color);
-            text-decoration: none;
-            font-weight: 500;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        @media (max-width: 600px) {
-            h1 {
-                font-size: 2rem;
-            }
-            .container {
-                margin: 1rem auto;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <article>
-            <!-- ARTICLE_CONTENT_HERE -->
-        </article>
-    </div>
-</body>
-</html>
-`;
-
-/**
- * Phase 4: Injects the generated article title and content into a professional HTML template.
- * This is a reliable, synchronous operation that avoids a fallible API call.
- */
-export function generateHtmlArticle(title: string, articleContent: string): string {
-    // Replace placeholders in the template with the actual title and article content.
-    return ARTICLE_TEMPLATE
-        .replace('<!-- ARTICLE_TITLE_HERE -->', title)
-        .replace('<!-- ARTICLE_CONTENT_HERE -->', articleContent);
 }

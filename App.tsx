@@ -1,6 +1,7 @@
+
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { refineTranscript, validateAndCorrectArticle, planImagePlacements, generateHtmlArticle, generateArticleImages } from './services/geminiService';
+import { refineTranscript, validateAndCorrectArticle, planImagePlacements, generateHtmlArticle, generateArticleImages } from './services';
 import type { ImageFile, PlacementStrategy } from './types';
 import { InputScreen } from './components/InputScreen';
 import { OutputScreen } from './components/OutputScreen';
@@ -8,12 +9,13 @@ import { OutputScreen } from './components/OutputScreen';
 declare const marked: { parse: (markdown: string) => string };
 
 /**
- * Resizes an image file to fit within a max width and height, preserving aspect ratio.
+ * Resizes an image file to fit within a max width and height, preserving aspect ratio,
+ * and converts it to WebP format for optimization.
  * This function is memory-intensive for very large files as it reads the whole file into memory.
  * The 1024x1024 cap helps mitigate this.
- * @returns A Promise that resolves with the base64-encoded string of the resized image.
+ * @returns A Promise that resolves with the base64-encoded string and MIME type of the resized image.
  */
-const resizeImage = (file: File, maxWidth: number, maxHeight: number): Promise<string> => {
+const resizeImage = (file: File, maxWidth: number, maxHeight: number): Promise<{base64: string, mimeType: string}> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
@@ -24,33 +26,46 @@ const resizeImage = (file: File, maxWidth: number, maxHeight: number): Promise<s
 
             const img = new Image();
             img.src = readerEvent.target.result as string;
-            img.onload = () => {
-                let { width, height } = img;
-
-                if (width > height) {
-                    if (width > maxWidth) {
-                        height = Math.round((height * maxWidth) / width);
-                        width = maxWidth;
+            img.onload = async () => {
+                try {
+                    // Ensure the image is fully decoded before drawing to canvas.
+                    // This prevents race conditions that can lead to corrupted output.
+                    if (img.decode) {
+                        await img.decode();
                     }
-                } else {
-                    if (height > maxHeight) {
-                        width = Math.round((width * maxHeight) / height);
-                        height = maxHeight;
-                    }
-                }
 
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                if (!ctx) {
-                    return reject(new Error('Could not get canvas context'));
+                    let { width, height } = img;
+
+                    if (width > height) {
+                        if (width > maxWidth) {
+                            height = Math.round((height * maxWidth) / width);
+                            width = maxWidth;
+                        }
+                    } else {
+                        if (height > maxHeight) {
+                            width = Math.round((width * maxHeight) / height);
+                            height = maxHeight;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        return reject(new Error('Could not get canvas context'));
+                    }
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Get data URL as WebP and extract base64 part. Use quality 0.8 for better compression.
+                    const dataUrl = canvas.toDataURL('image/webp', 0.8);
+                    resolve({
+                        base64: dataUrl.split(',')[1],
+                        mimeType: 'image/webp'
+                    });
+                } catch (err) {
+                    reject(err);
                 }
-                ctx.drawImage(img, 0, 0, width, height);
-                
-                // Get data URL and extract base64 part. Use quality 0.9 for JPEGs.
-                const dataUrl = canvas.toDataURL(file.type, 0.9);
-                resolve(dataUrl.split(',')[1]);
             };
             img.onerror = (err) => reject(err);
         };
@@ -58,14 +73,55 @@ const resizeImage = (file: File, maxWidth: number, maxHeight: number): Promise<s
     });
 };
 
+/**
+ * Converts an image from a base64 string to the WebP format.
+ * @param base64 The source base64 string.
+ * @param mimeType The source image's MIME type (e.g., 'image/png').
+ * @returns A Promise that resolves with the base64-encoded string and MIME type of the WebP image.
+ */
+const convertImageToWebP = (base64: string, mimeType: string): Promise<{base64: string, mimeType: string}> => {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.src = `data:${mimeType};base64,${base64}`;
+        img.onload = async () => {
+            try {
+                // Ensure the image is fully decoded before drawing to canvas.
+                // This prevents race conditions that can lead to corrupted output.
+                if (img.decode) {
+                    await img.decode();
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    return reject(new Error('Could not get canvas context'));
+                }
+                ctx.drawImage(img, 0, 0, img.width, img.height);
+                
+                // Get data URL as WebP and extract base64 part. Use quality 0.8 for good compression.
+                const dataUrl = canvas.toDataURL('image/webp', 0.8);
+                resolve({
+                    base64: dataUrl.split(',')[1],
+                    mimeType: 'image/webp'
+                });
+            } catch (err) {
+                reject(err);
+            }
+        };
+        img.onerror = (err) => reject(err);
+    });
+};
+
 
 const Header: React.FC = () => (
-    <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10 border-b border-slate-200 dark:border-slate-800">
-        <div className="container mx-auto px-4 md:px-8 py-3">
-            <h1 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-white">
+    <header className="py-8 md:py-12">
+        <div className="container mx-auto px-4 md:px-8 text-center">
+            <h1 className="text-3xl md:text-4xl font-bold text-slate-800 dark:text-white">
                 Post Perfect AI
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-sm mt-0.5">
+            <p className="text-slate-500 dark:text-slate-400 text-base mt-2 max-w-2xl mx-auto">
                 Effortlessly transform raw transcripts and images into polished, ready-to-publish articles.
             </p>
         </div>
@@ -75,6 +131,7 @@ const Header: React.FC = () => (
 const App: React.FC = () => {
     const [view, setView] = useState<'input' | 'output'>('input');
     const [transcript, setTranscript] = useState<string>('');
+    const [suggestedTitle, setSuggestedTitle] = useState<string>('');
     const [images, setImages] = useState<ImageFile[]>([]);
     const [loading, setLoading] = useState<boolean>(false);
     const [loadingMessage, setLoadingMessage] = useState<string>('');
@@ -103,13 +160,14 @@ const App: React.FC = () => {
     const processImageFiles = useCallback(async (files: File[]) => {
         try {
             const newImages = await Promise.all(files.map(async (file) => {
-                // Resize image to max 1024x1024 for memory efficiency
-                const resizedBase64 = await resizeImage(file, 1024, 1024);
+                // Resize image to max 1024x1024 and convert to WebP for efficiency
+                const { base64, mimeType } = await resizeImage(file, 1024, 1024);
                 return {
                     id: crypto.randomUUID(), // Generate a stable unique ID
                     file,
                     previewUrl: URL.createObjectURL(file), // Use original file for preview
-                    base64: resizedBase64,
+                    base64,
+                    mimeType,
                 };
             }));
             setImages(prev => [...prev, ...newImages]);
@@ -166,7 +224,7 @@ const App: React.FC = () => {
         try {
             // Phase 1: Transcript Refinement
             setLoadingMessage('Phase 1/4: Structuring article...');
-            const initialArticle = await refineTranscript(ai, transcript);
+            const initialArticle = await refineTranscript(ai, transcript, suggestedTitle);
 
             // Phase 2: Verification and Correction
             setLoadingMessage('Phase 2/4: Verifying content accuracy...');
@@ -181,14 +239,29 @@ const App: React.FC = () => {
 
             if (images.length > 0) {
                 imagesForArticle = images.map(img => ({
-                    file: { name: img.file.name, type: img.file.type },
+                    file: { name: img.file.name, type: img.mimeType },
                     base64: img.base64,
                 }));
             } else {
                 setLoadingMessage('Phase 2.5/4: Generating article images...');
                 try {
+                    // Step 1: Generate images as PNG (a supported format)
                     const generatedImagesData = await generateArticleImages(ai, markdownContent);
-                    imagesForArticle = generatedImagesData.map(img => ({
+                    
+                    // Step 2: Convert the generated PNGs to WebP for optimization
+                    const optimizedImagesData = await Promise.all(
+                        generatedImagesData.map(async (img) => {
+                            const { base64: webpBase64, mimeType: webpMimeType } = await convertImageToWebP(img.base64, img.mimeType);
+                            const newFilename = img.filename.replace(/\.[^/.]+$/, ".webp");
+                            return {
+                                filename: newFilename,
+                                base64: webpBase64,
+                                mimeType: webpMimeType,
+                            };
+                        })
+                    );
+                    
+                    imagesForArticle = optimizedImagesData.map(img => ({
                         file: { name: img.filename, type: img.mimeType },
                         base64: img.base64
                     }));
@@ -319,7 +392,7 @@ const App: React.FC = () => {
             setLoading(false);
             setLoadingMessage('');
         }
-    }, [transcript, images, ai]);
+    }, [transcript, images, ai, suggestedTitle]);
 
     const handleReset = useCallback(() => {
         // No confirmation prompt, just reset the state.
@@ -330,6 +403,7 @@ const App: React.FC = () => {
         });
         
         setTranscript('');
+        setSuggestedTitle('');
         setGeneratedHtml('');
         setGeneratedTitle('');
         setError(null);
@@ -343,11 +417,13 @@ const App: React.FC = () => {
     return (
         <div className="min-h-screen text-slate-800 dark:text-slate-200">
             <Header />
-            <main className="container mx-auto p-4 md:p-8">
+            <main className="container mx-auto p-4 md:px-8 pb-16">
                 {view === 'input' && (
                     <InputScreen
                         transcript={transcript}
                         setTranscript={setTranscript}
+                        suggestedTitle={suggestedTitle}
+                        setSuggestedTitle={setSuggestedTitle}
                         images={images}
                         onImageUpload={handleImageUpload}
                         onTranscriptUpload={handleTranscriptUpload}
