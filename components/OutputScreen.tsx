@@ -1,8 +1,7 @@
-
 import React, { useState } from 'react';
 import { Spinner } from './Spinner';
 import { ErrorDisplay } from './ErrorDisplay';
-import { ArrowUturnLeftIcon, ClipboardIcon, DownloadIcon, ExpandIcon, XMarkIcon, DocumentTextIcon } from './icons';
+import { ClipboardIcon, DownloadIcon, ExpandIcon, XMarkIcon, DocumentTextIcon, ArrowUturnLeftIcon } from './icons';
 
 interface OutputScreenProps {
     loading: boolean;
@@ -26,11 +25,8 @@ export const OutputScreen: React.FC<OutputScreenProps> = ({
 
     const copyToClipboard = () => {
         navigator.clipboard.writeText(generatedHtml).then(() => {
-            alert("HTML copied to clipboard!");
-        }).catch(err => {
-            console.error("Failed to copy:", err);
-            alert("Failed to copy HTML.");
-        });
+            // Could add a toast here
+        }).catch(err => console.error(err));
     };
 
     const downloadHtml = () => {
@@ -46,100 +42,119 @@ export const OutputScreen: React.FC<OutputScreenProps> = ({
         URL.revokeObjectURL(url);
     };
 
-    const renderContent = () => {
-        if (loading) {
-            return (
-                <div className="flex flex-col items-center justify-center h-96">
-                    <Spinner />
-                    <span className="mt-4 text-lg font-medium text-indigo-600 dark:text-indigo-400">{loadingMessage}</span>
-                    <p className="mt-2 text-slate-500 dark:text-slate-400">Gemini is working its magic, please wait...</p>
-                </div>
-            );
-        }
-
-        if (error) {
-            return <ErrorDisplay error={error} />;
-        }
-
-        if (generatedHtml) {
-            return (
-                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-                    <div className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between p-2">
-                        <div className="flex bg-slate-200 dark:bg-slate-700/50 rounded-full p-1 space-x-1">
-                            <button onClick={() => setActiveTab('preview')} className={`px-4 py-1.5 text-sm font-semibold rounded-full w-24 transition-all ${activeTab === 'preview' ? 'bg-white dark:bg-slate-900/70 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700'}`}>Preview</button>
-                            <button onClick={() => setActiveTab('html')} className={`px-4 py-1.5 text-sm font-semibold rounded-full w-24 transition-all ${activeTab === 'html' ? 'bg-white dark:bg-slate-900/70 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-700'}`}>HTML</button>
-                        </div>
-                        <div className="flex space-x-1">
-                            <button onClick={() => setIsPreviewFullScreen(true)} className="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" title="Full screen preview"><ExpandIcon className="h-5 w-5" /></button>
-                            <button onClick={copyToClipboard} className="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" title="Copy HTML"><ClipboardIcon className="h-5 w-5" /></button>
-                            <button onClick={downloadHtml} className="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" title="Download HTML"><DownloadIcon className="h-5 w-5" /></button>
-                        </div>
-                    </div>
-                    
-                    {activeTab === 'preview' && (
-                        <div className="p-1 bg-white dark:bg-slate-800">
-                          <iframe
-                            srcDoc={generatedHtml}
-                            title="Article Preview"
-                            className="w-full h-[40rem] border-0"
-                            sandbox="allow-scripts"
-                          />
-                        </div>
-                    )}
-                    {activeTab === 'html' && (
-                        <textarea
-                            readOnly
-                            value={generatedHtml}
-                            className="w-full h-[40rem] p-4 font-mono text-sm bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 border-0 focus:ring-0"
-                        />
-                    )}
-                </div>
-            );
-        }
-
+    // Empty State
+    if (!loading && !error && !generatedHtml) {
         return (
-            <div className="flex flex-col items-center justify-center h-96 text-center text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/50 rounded-lg">
-                <DocumentTextIcon className="h-16 w-16 text-slate-400 dark:text-slate-600 mb-4" />
-                <p className="text-lg font-medium">Something went wrong.</p>
-                <p>We couldn't generate your article. Please try again.</p>
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-400 dark:text-slate-600">
+                <div className="w-24 h-24 bg-slate-100 dark:bg-slate-800/50 rounded-full flex items-center justify-center mb-6">
+                    <DocumentTextIcon className="h-10 w-10" />
+                </div>
+                <h3 className="text-lg font-medium text-slate-700 dark:text-slate-300 mb-2">Ready to Write</h3>
+                <p className="max-w-xs mx-auto text-sm">Enter your transcript and title on the left, then hit Generate to see the magic happen here.</p>
             </div>
         );
-    };
+    }
 
-    return (
-        <div className="max-w-7xl mx-auto">
-            <div className="space-y-8 bg-white dark:bg-slate-900 p-6 md:p-8 rounded-2xl shadow-2xl shadow-slate-200/50 dark:shadow-black/50 border border-slate-200/80 dark:border-slate-800/50">
-                <div className="flex justify-between items-center">
-                    <h2 className="text-2xl font-semibold text-slate-800 dark:text-slate-200">Your Generated Article</h2>
-                    <button
-                        type="button"
-                        onClick={onReset}
-                        disabled={loading}
-                        className="flex items-center py-2 px-4 border border-slate-300 dark:border-slate-700 rounded-lg shadow-sm text-sm font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-700/50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition"
-                    >
-                        <ArrowUturnLeftIcon className="h-5 w-5 mr-2" />
-                        Start New Article
+    // Loading State
+    if (loading) {
+        return (
+            <div className="flex-1 flex flex-col items-center justify-center p-8">
+                <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-800 flex flex-col items-center">
+                    <div className="text-indigo-600 mb-4"><Spinner /></div>
+                    <h3 className="text-lg font-semibold text-slate-800 dark:text-white mb-1">Generating Article</h3>
+                    <p className="text-slate-500 text-sm animate-pulse">{loadingMessage}</p>
+                </div>
+            </div>
+        );
+    }
+
+    // Error State
+    if (error) {
+        return (
+            <div className="flex-1 p-8 flex flex-col items-center justify-center">
+                <div className="w-full max-w-md">
+                    <ErrorDisplay error={error} />
+                    <button onClick={onReset} className="mt-4 w-full py-2 text-sm text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition">
+                        Try Again
                     </button>
                 </div>
-                {renderContent()}
             </div>
-            
+        );
+    }
+
+    return (
+        <div className="flex flex-col h-full overflow-hidden">
+            {/* Toolbar */}
+            <div className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-2">
+                     <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider mr-2 hidden sm:block">Result</span>
+                    <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg">
+                        <button 
+                            onClick={() => setActiveTab('preview')} 
+                            className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${activeTab === 'preview' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-300' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Preview
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('html')} 
+                            className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${activeTab === 'html' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-300' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Code
+                        </button>
+                    </div>
+                </div>
+                
+                <div className="flex items-center gap-1">
+                    <button onClick={onReset} className="p-2 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition" title="Clear Results">
+                        <ArrowUturnLeftIcon className="h-4 w-4" />
+                    </button>
+                    <div className="w-px h-4 bg-slate-300 dark:bg-slate-700 mx-1"></div>
+                    <button onClick={() => setIsPreviewFullScreen(true)} className="p-2 text-slate-500 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition" title="Full Screen">
+                        <ExpandIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={copyToClipboard} className="p-2 text-slate-500 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition" title="Copy Code">
+                        <ClipboardIcon className="h-4 w-4" />
+                    </button>
+                    <button onClick={downloadHtml} className="p-2 text-slate-500 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition" title="Download HTML">
+                        <DownloadIcon className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Content Area */}
+            <div className="flex-1 overflow-hidden bg-slate-100 dark:bg-black/40 relative">
+                {activeTab === 'preview' ? (
+                    <iframe
+                        srcDoc={generatedHtml}
+                        title="Article Preview"
+                        className="w-full h-full border-0 bg-white"
+                        sandbox="allow-scripts"
+                    />
+                ) : (
+                    <textarea
+                        readOnly
+                        value={generatedHtml}
+                        className="w-full h-full p-6 font-mono text-xs bg-slate-900 text-slate-300 border-0 focus:ring-0 resize-none"
+                    />
+                )}
+            </div>
+
+            {/* Full Screen Modal */}
             {isPreviewFullScreen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setIsPreviewFullScreen(false)}>
-                    <div className="relative w-[95vw] h-[95vh] bg-white dark:bg-slate-900 rounded-lg shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 md:p-8">
+                    <div className="relative w-full h-full max-w-6xl bg-white rounded-lg shadow-2xl overflow-hidden flex flex-col">
+                        <div className="bg-slate-900 text-white px-4 py-2 flex justify-between items-center">
+                            <span className="text-sm font-medium opacity-80">Full Screen Preview</span>
+                            <button onClick={() => setIsPreviewFullScreen(false)} className="p-1 hover:bg-white/20 rounded-full transition">
+                                <XMarkIcon className="h-6 w-6" />
+                            </button>
+                        </div>
                         <iframe
                             srcDoc={generatedHtml}
                             title="Article Preview (Full Screen)"
-                            className="w-full h-full border-0"
+                            className="flex-1 w-full border-0"
                             sandbox="allow-scripts"
                         />
-                        <button 
-                            onClick={() => setIsPreviewFullScreen(false)} 
-                            className="absolute top-3 right-3 p-2 bg-slate-800/50 text-white rounded-full hover:bg-slate-800/80 transition"
-                            aria-label="Close full screen preview"
-                        >
-                            <XMarkIcon className="h-6 w-6" />
-                        </button>
                     </div>
                 </div>
             )}

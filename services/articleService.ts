@@ -4,19 +4,22 @@ import { GoogleGenAI, Type } from '@google/genai';
 /**
  * Phase 1: Refines a raw transcript into a structured article object using Gemini.
  */
-export async function refineTranscript(ai: GoogleGenAI, transcript: string, suggestedTitle?: string): Promise<{ title: string; content: string }> {
-    const titleInstruction = suggestedTitle
-        ? `1.  **Refine the Title**: A title has been suggested. Use it as a strong basis. Your tasks are to:
-        - Refine it for clarity, conciseness, and impact.
-        - Correct any spelling or grammatical errors.
-        - If the suggestion is good, use a polished version of it.
-        - If the suggestion is completely irrelevant to the transcript content, you MUST ignore it and generate a new, more appropriate title from scratch.`
-        : `1.  **Create a Title**: Generate a concise, informative, and engaging title for the article.`;
-    
+export async function refineTranscript(ai: GoogleGenAI, transcript: string, feedback?: string): Promise<{ title: string; content: string }> {
+    let feedbackInstruction = "";
+    if (feedback && feedback.trim()) {
+        feedbackInstruction = `
+CRITICAL USER FEEDBACK / REFINEMENT INSTRUCTIONS:
+The user is requesting a regeneration of this article with the following specific instructions. You MUST prioritize these instructions when structuring and writing the content:
+"${feedback}"
+`;
+    }
+
     const prompt = `Act as an expert technical writer and editor. Your task is to transform the following raw transcript into a polished, well-structured technical article.
-${suggestedTitle ? `\nSUGGESTED TITLE:\n---\n${suggestedTitle}\n---\n` : ''}
+
+${feedbackInstruction}
+
 Follow these instructions precisely:
-${titleInstruction}
+1.  **Create a Title**: Generate a concise, informative, and engaging title for the article.
 2.  **Filter "Chatter"**: Remove all conversational filler (e.g., "um," "uh," "like," "you know"), repeated words, and false starts.
 3.  **Preserve Meaning**: Do NOT alter the core meaning or omit any technical details from the original transcript. The goal is to clarify, not to rewrite the substance.
 4.  **Structure the Content**: Organize the article logically using Markdown subheadings (## for H2, ### for H3) to create clear sections and subsections.
@@ -35,7 +38,7 @@ ${transcript}
 ---`;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-3-pro-preview',
         contents: prompt,
         config: {
             responseMimeType: "application/json",
@@ -101,7 +104,7 @@ ${generatedArticle.content}
 `;
 
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-3-pro-preview',
         contents: prompt,
         config: {
             responseMimeType: "application/json",

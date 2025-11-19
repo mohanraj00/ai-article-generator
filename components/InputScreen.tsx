@@ -1,5 +1,5 @@
 
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useState } from 'react';
 import type { ImageFile } from '../types';
 import { ImagePreview } from './ImagePreview';
 import { Spinner } from './Spinner';
@@ -8,8 +8,8 @@ import { UploadIcon, DocumentArrowUpIcon } from './icons';
 interface InputScreenProps {
     transcript: string;
     setTranscript: (value: string) => void;
-    suggestedTitle: string;
-    setSuggestedTitle: (value: string) => void;
+    feedback: string;
+    setFeedback: (value: string) => void;
     images: ImageFile[];
     onImageUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
     onTranscriptUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -18,13 +18,14 @@ interface InputScreenProps {
     loading: boolean;
     isGenerateDisabled: boolean;
     onProcessImageFiles: (files: File[]) => void;
+    hasGeneratedContent: boolean;
 }
 
 export const InputScreen: React.FC<InputScreenProps> = ({
     transcript,
     setTranscript,
-    suggestedTitle,
-    setSuggestedTitle,
+    feedback,
+    setFeedback,
     images,
     onImageUpload,
     onTranscriptUpload,
@@ -33,20 +34,20 @@ export const InputScreen: React.FC<InputScreenProps> = ({
     loading,
     isGenerateDisabled,
     onProcessImageFiles,
+    hasGeneratedContent,
 }) => {
-    const formRef = useRef<HTMLFormElement>(null);
+    const [isDragging, setIsDragging] = useState(false);
 
     const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
         if (loading) return;
         const items = event.clipboardData.items;
         const imageFiles: File[] = [];
 
-        for (let i = 0; i in items; i++) {
-            if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
-                const file = items[i].getAsFile();
-                if (file) {
-                    imageFiles.push(file);
-                }
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) imageFiles.push(file);
             }
         }
 
@@ -55,74 +56,124 @@ export const InputScreen: React.FC<InputScreenProps> = ({
             onProcessImageFiles(imageFiles);
         }
     }, [onProcessImageFiles, loading]);
+
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(true);
+    };
+
+    const handleDragLeave = (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+        
+        if (loading) return;
+
+        const files: File[] = Array.from(e.dataTransfer.files);
+        const imageFiles = files.filter(f => f.type.startsWith('image/'));
+        
+        // If dropped files are images, process them
+        if (imageFiles.length > 0) {
+            onProcessImageFiles(imageFiles);
+        }
+    };
     
     return (
-        <div className="max-w-4xl mx-auto" onPaste={handlePaste}>
-            <form ref={formRef}>
-                <div className="space-y-10 bg-white dark:bg-slate-900 p-8 md:p-10 rounded-2xl shadow-2xl shadow-slate-200/50 dark:shadow-black/50 border border-slate-200/80 dark:border-slate-800/50">
-                    <div>
-                        <label htmlFor="transcript" className="block text-base font-medium mb-2 text-slate-700 dark:text-slate-300">1. Paste or Upload Transcript</label>
-                        <div className="relative">
-                            <textarea
-                                id="transcript"
-                                value={transcript}
-                                onChange={(e) => setTranscript(e.target.value)}
-                                placeholder="Paste your raw audio transcript here, or use the icon to upload a file..."
-                                className="w-full h-48 p-3 pr-12 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 dark:bg-slate-800 dark:border-slate-700 dark:placeholder-slate-400 dark:text-white transition"
-                                disabled={loading}
-                            />
-                            <label htmlFor="transcript-upload" className="absolute top-3 right-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 cursor-pointer transition-colors" title="Upload transcript file">
-                                <DocumentArrowUpIcon className="h-6 w-6" />
-                                <input id="transcript-upload" name="transcript-upload" type="file" className="sr-only" accept=".txt,.md,text/plain" onChange={onTranscriptUpload} disabled={loading} />
-                            </label>
+        <div 
+            className="flex flex-col h-full overflow-hidden" 
+            onPaste={handlePaste}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6 relative">
+                {/* Overlay Drop Indication */}
+                {isDragging && (
+                    <div className="absolute inset-0 z-50 bg-indigo-500/10 border-2 border-indigo-500 border-dashed m-4 rounded-xl flex items-center justify-center backdrop-blur-sm pointer-events-none">
+                        <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-lg text-indigo-600 font-medium">
+                            Drop images to attach
                         </div>
                     </div>
+                )}
 
-                    <div>
-                        <label htmlFor="suggested-title" className="block text-base font-medium mb-2 text-slate-700 dark:text-slate-300">
-                            2. Suggest a Title (Optional)
+                {/* Transcript Input */}
+                <div className="flex flex-col min-h-[200px]">
+                    <div className="flex justify-between items-end mb-2">
+                        <label htmlFor="transcript" className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            Transcript
                         </label>
-                        <input
-                            type="text"
-                            id="suggested-title"
-                            value={suggestedTitle}
-                            onChange={(e) => setSuggestedTitle(e.target.value)}
-                            placeholder="e.g., How to Build a React App in 5 Minutes"
-                            className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 dark:bg-slate-800 dark:border-slate-700 dark:placeholder-slate-400 dark:text-white transition"
+                         <label className="cursor-pointer text-indigo-600 hover:text-indigo-500 text-xs font-medium flex items-center gap-1 transition-colors">
+                            <DocumentArrowUpIcon className="h-4 w-4" />
+                            <span>Import File</span>
+                            <input type="file" className="sr-only" accept=".txt,.md,text/plain" onChange={onTranscriptUpload} disabled={loading} />
+                        </label>
+                    </div>
+                    <textarea
+                        id="transcript"
+                        value={transcript}
+                        onChange={(e) => setTranscript(e.target.value)}
+                        placeholder="Paste your raw transcript here, or drop images anywhere to attach them..."
+                        className="flex-1 w-full p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 rounded-xl resize-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 dark:text-slate-300 text-base leading-relaxed transition"
+                        disabled={loading}
+                    />
+                </div>
+
+                {/* Attachments Area - Only show if images exist or if empty state hint is needed */}
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                         <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            Attachments ({images.length})
+                        </span>
+                        <label className="cursor-pointer p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition">
+                             <UploadIcon className="h-5 w-5 text-slate-400 hover:text-indigo-600" />
+                             <input type="file" className="sr-only" multiple accept="image/*" onChange={onImageUpload} disabled={loading} />
+                        </label>
+                    </div>
+                    
+                    {images.length > 0 ? (
+                         <ImagePreview images={images} onRemove={onRemoveImage} />
+                    ) : (
+                        <div className="border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-6 text-center transition-colors hover:border-indigo-300 dark:hover:border-indigo-700/50">
+                            <p className="text-sm text-slate-500">No images attached</p>
+                            <p className="text-xs text-slate-400 mt-1">Drag & drop or paste screenshots</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Footer Action */}
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
+                {hasGeneratedContent && (
+                    <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
+                         <div className="flex justify-between items-end mb-2">
+                            <label htmlFor="feedback" className="block text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                                Refinement Instructions (Optional)
+                            </label>
+                        </div>
+                        <textarea
+                            id="feedback"
+                            value={feedback}
+                            onChange={(e) => setFeedback(e.target.value)}
+                            placeholder="What should be different this time? (e.g., 'Make the tone more professional', 'Expand on the second section')"
+                            className="w-full p-3 text-sm bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-700 dark:text-slate-300 resize-none h-20 transition placeholder:text-slate-400"
                             disabled={loading}
                         />
                     </div>
+                )}
 
-                    <div>
-                        <label className="block text-base font-medium mb-2 text-slate-700 dark:text-slate-300">3. Upload Screenshots (Optional)</label>
-                        <div className="mt-2 flex justify-center rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 px-6 py-10 hover:border-indigo-500 dark:hover:border-indigo-600 transition-colors">
-                            <div className="space-y-1 text-center">
-                                <UploadIcon className="mx-auto h-12 w-12 text-slate-400" />
-                                <div className="flex text-sm text-slate-600 dark:text-slate-400">
-                                    <label htmlFor="file-upload" className="relative cursor-pointer rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300 dark:ring-offset-slate-900">
-                                        <span>Upload files</span>
-                                        <input id="file-upload" name="file-upload" type="file" className="sr-only" multiple accept="image/*" onChange={onImageUpload} disabled={loading} />
-                                    </label>
-                                    <p className="pl-1">, paste, or drag and drop</p>
-                                </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-500">PNG, JPG, GIF up to 10MB</p>
-                            </div>
-                        </div>
-                        <ImagePreview images={images} onRemove={onRemoveImage} />
-                    </div>
-                    
-                    <div className="pt-4">
-                        <button
-                            type="button"
-                            onClick={onGenerate}
-                            disabled={isGenerateDisabled}
-                            className="w-full flex justify-center items-center py-3.5 px-4 border border-transparent rounded-lg shadow-sm text-base font-semibold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-slate-400 disabled:cursor-not-allowed dark:ring-offset-slate-900 transition-all duration-200 active:scale-[0.98] active:bg-indigo-800"
-                        >
-                            {loading ? <Spinner /> : 'Generate Article'}
-                        </button>
-                    </div>
-                </div>
-            </form>
+                <button
+                    type="button"
+                    onClick={onGenerate}
+                    disabled={isGenerateDisabled}
+                    className="w-full flex justify-center items-center py-3 px-4 rounded-xl shadow-lg shadow-indigo-500/20 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none disabled:cursor-not-allowed dark:ring-offset-slate-900 transition-all active:scale-[0.98]"
+                >
+                    {loading ? <Spinner /> : (hasGeneratedContent ? 'Regenerate Article' : 'Generate Article')}
+                </button>
+            </div>
         </div>
     );
 };

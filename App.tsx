@@ -1,137 +1,22 @@
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { refineTranscript, validateAndCorrectArticle, planImagePlacements, generateHtmlArticle, generateArticleImages } from './services';
-import type { ImageFile, PlacementStrategy } from './types';
+import { runGenerationWorkflow } from './services';
+import { resizeImage } from './utils/imageUtils';
+import type { ImageFile } from './types';
 import { InputScreen } from './components/InputScreen';
 import { OutputScreen } from './components/OutputScreen';
-
-declare const marked: { parse: (markdown: string) => string };
-
-/**
- * Resizes an image file to fit within a max width and height, preserving aspect ratio,
- * and converts it to WebP format for optimization.
- * This function is memory-intensive for very large files as it reads the whole file into memory.
- * The 1024x1024 cap helps mitigate this.
- * @returns A Promise that resolves with the base64-encoded string and MIME type of the resized image.
- */
-const resizeImage = (file: File, maxWidth: number, maxHeight: number): Promise<{base64: string, mimeType: string}> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = (readerEvent) => {
-            if (!readerEvent.target?.result) {
-                return reject(new Error("File could not be read."));
-            }
-
-            const img = new Image();
-            img.src = readerEvent.target.result as string;
-            img.onload = async () => {
-                try {
-                    // Ensure the image is fully decoded before drawing to canvas.
-                    // This prevents race conditions that can lead to corrupted output.
-                    if (img.decode) {
-                        await img.decode();
-                    }
-
-                    let { width, height } = img;
-
-                    if (width > height) {
-                        if (width > maxWidth) {
-                            height = Math.round((height * maxWidth) / width);
-                            width = maxWidth;
-                        }
-                    } else {
-                        if (height > maxHeight) {
-                            width = Math.round((width * maxHeight) / height);
-                            height = maxHeight;
-                        }
-                    }
-
-                    const canvas = document.createElement('canvas');
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) {
-                        return reject(new Error('Could not get canvas context'));
-                    }
-                    ctx.drawImage(img, 0, 0, width, height);
-                    
-                    // Get data URL as WebP and extract base64 part. Use quality 0.8 for better compression.
-                    const dataUrl = canvas.toDataURL('image/webp', 0.8);
-                    resolve({
-                        base64: dataUrl.split(',')[1],
-                        mimeType: 'image/webp'
-                    });
-                } catch (err) {
-                    reject(err);
-                }
-            };
-            img.onerror = (err) => reject(err);
-        };
-        reader.onerror = (err) => reject(err);
-    });
-};
-
-/**
- * Converts an image from a base64 string to the WebP format.
- * @param base64 The source base64 string.
- * @param mimeType The source image's MIME type (e.g., 'image/png').
- * @returns A Promise that resolves with the base64-encoded string and MIME type of the WebP image.
- */
-const convertImageToWebP = (base64: string, mimeType: string): Promise<{base64: string, mimeType: string}> => {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.src = `data:${mimeType};base64,${base64}`;
-        img.onload = async () => {
-            try {
-                // Ensure the image is fully decoded before drawing to canvas.
-                // This prevents race conditions that can lead to corrupted output.
-                if (img.decode) {
-                    await img.decode();
-                }
-
-                const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
-                const ctx = canvas.getContext('2d');
-                if (!ctx) {
-                    return reject(new Error('Could not get canvas context'));
-                }
-                ctx.drawImage(img, 0, 0, img.width, img.height);
-                
-                // Get data URL as WebP and extract base64 part. Use quality 0.8 for good compression.
-                const dataUrl = canvas.toDataURL('image/webp', 0.8);
-                resolve({
-                    base64: dataUrl.split(',')[1],
-                    mimeType: 'image/webp'
-                });
-            } catch (err) {
-                reject(err);
-            }
-        };
-        img.onerror = (err) => reject(err);
-    });
-};
-
-
-const Header: React.FC = () => (
-    <header className="py-8 md:py-12">
-        <div className="container mx-auto px-4 md:px-8 text-center">
-            <h1 className="text-3xl md:text-4xl font-bold text-slate-800 dark:text-white">
-                Post Perfect AI
-            </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-base mt-2 max-w-2xl mx-auto">
-                Effortlessly transform raw transcripts and images into polished, ready-to-publish articles.
-            </p>
-        </div>
-    </header>
-);
+import { DocumentTextIcon } from './components/icons';
 
 const App: React.FC = () => {
-    const [view, setView] = useState<'input' | 'output'>('input');
+    // "mobileTab" is only used on small screens. On desktop, we show both side-by-side.
+    const [mobileTab, setMobileTab] = useState<'input' | 'output'>('input');
+    
+    // Key to force re-render of InputScreen to clear uncontrolled file inputs on reset
+    const [resetKey, setResetKey] = useState<number>(0);
+
     const [transcript, setTranscript] = useState<string>('');
-    const [suggestedTitle, setSuggestedTitle] = useState<string>('');
+    const [feedback, setFeedback] = useState<string>('');
     const [images, setImages] = useState<ImageFile[]>([]);
     const [loading, setLoading] = useState<boolean>(false);
     const [loadingMessage, setLoadingMessage] = useState<string>('');
@@ -139,10 +24,9 @@ const App: React.FC = () => {
     const [generatedTitle, setGeneratedTitle] = useState<string>('');
     const [error, setError] = useState<string | null>(null);
 
-    const imagesRef = useRef<ImageFile[]>([]); // Ref to hold the latest images for unmount cleanup
+    const imagesRef = useRef<ImageFile[]>([]);
     imagesRef.current = images;
 
-    // Effect for cleaning up Object URLs on component unmount to prevent memory leaks
     useEffect(() => {
         return () => {
             imagesRef.current.forEach(image => URL.revokeObjectURL(image.previewUrl));
@@ -158,25 +42,39 @@ const App: React.FC = () => {
     }, []);
 
     const processImageFiles = useCallback(async (files: File[]) => {
-        try {
-            const newImages = await Promise.all(files.map(async (file) => {
-                // Resize image to max 1024x1024 and convert to WebP for efficiency
-                const { base64, mimeType } = await resizeImage(file, 1024, 1024);
-                return {
-                    id: crypto.randomUUID(), // Generate a stable unique ID
-                    file,
-                    previewUrl: URL.createObjectURL(file), // Use original file for preview
-                    base64,
-                    mimeType,
-                };
-            }));
+        const imageProcessingPromises = files.map(file => 
+            resizeImage(file, 1024, 1024).then(resized => ({
+                id: crypto.randomUUID(),
+                file,
+                previewUrl: URL.createObjectURL(file),
+                base64: resized.base64,
+                mimeType: resized.mimeType,
+            }))
+        );
+
+        const results = await Promise.allSettled(imageProcessingPromises);
+        
+        const newImages: ImageFile[] = [];
+        const processingErrors: string[] = [];
+
+        results.forEach((result, index) => {
+            if (result.status === 'fulfilled') {
+                newImages.push(result.value);
+            } else {
+                const errorMessage = (result.reason instanceof Error) ? result.reason.message : String(result.reason);
+                console.error(`Failed to process file ${files[index].name}:`, result.reason);
+                processingErrors.push(errorMessage);
+            }
+        });
+
+        if (newImages.length > 0) {
             setImages(prev => [...prev, ...newImages]);
-        } catch (err) {
-            console.error("Error processing files:", err);
-            setError("There was an error processing the images.");
+        }
+
+        if (processingErrors.length > 0) {
+            setError(`Could not process ${processingErrors.length} image(s). ${processingErrors[0]}`);
         }
     }, []);
-
 
     const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         if (event.target.files) {
@@ -193,8 +91,7 @@ const App: React.FC = () => {
                 setTranscript(text);
             };
             reader.onerror = (err) => {
-                console.error("Error reading transcript file:", err);
-                setError("There was an error reading the transcript file.");
+                setError("Error reading transcript file.");
             };
             reader.readAsText(file);
         }
@@ -203,227 +100,102 @@ const App: React.FC = () => {
     const removeImage = useCallback((id: string) => {
         setImages(prevImages => {
             const imageToRemove = prevImages.find(img => img.id === id);
-            if (imageToRemove) {
-                URL.revokeObjectURL(imageToRemove.previewUrl);
-            }
+            if (imageToRemove) URL.revokeObjectURL(imageToRemove.previewUrl);
             return prevImages.filter(img => img.id !== id);
         });
     }, []);
 
     const handleGenerate = useCallback(async () => {
         if (!transcript.trim() || !ai) {
-            setError("Please provide a transcript to generate an article.");
+            setError("Please provide a transcript.");
             return;
         }
         
-        setView('output');
+        setMobileTab('output'); // Switch tab on mobile
         setLoading(true);
         setError(null);
-        setGeneratedHtml('');
+        if (!generatedHtml) {
+             // Only clear if this is a fresh generation, not a regeneration which might want to preserve view until done
+             setGeneratedHtml(''); 
+        }
+        setLoadingMessage('Starting...');
 
         try {
-            // Phase 1: Transcript Refinement
-            setLoadingMessage('Phase 1/4: Structuring article...');
-            const initialArticle = await refineTranscript(ai, transcript, suggestedTitle);
+            const result = await runGenerationWorkflow(
+                ai,
+                transcript,
+                images,
+                (progress) => setLoadingMessage(progress.step),
+                feedback
+            );
 
-            // Phase 2: Verification and Correction
-            setLoadingMessage('Phase 2/4: Verifying content accuracy...');
-            const { title, content: markdownContent } = await validateAndCorrectArticle(ai, transcript, initialArticle);
-            setGeneratedTitle(title);
-            
-            // This will hold either user-provided images or generated ones.
-            let imagesForArticle: {
-                file: { name: string; type: string };
-                base64: string;
-            }[] = [];
-
-            if (images.length > 0) {
-                imagesForArticle = images.map(img => ({
-                    file: { name: img.file.name, type: img.mimeType },
-                    base64: img.base64,
-                }));
-            } else {
-                setLoadingMessage('Phase 2.5/4: Generating article images...');
-                try {
-                    // Step 1: Generate images as PNG (a supported format)
-                    const generatedImagesData = await generateArticleImages(ai, markdownContent);
-                    
-                    // Step 2: Convert the generated PNGs to WebP for optimization
-                    const optimizedImagesData = await Promise.all(
-                        generatedImagesData.map(async (img) => {
-                            const { base64: webpBase64, mimeType: webpMimeType } = await convertImageToWebP(img.base64, img.mimeType);
-                            const newFilename = img.filename.replace(/\.[^/.]+$/, ".webp");
-                            return {
-                                filename: newFilename,
-                                base64: webpBase64,
-                                mimeType: webpMimeType,
-                            };
-                        })
-                    );
-                    
-                    imagesForArticle = optimizedImagesData.map(img => ({
-                        file: { name: img.filename, type: img.mimeType },
-                        base64: img.base64
-                    }));
-                } catch (genErr) {
-                    console.error("Image generation failed, proceeding without images.", genErr);
-                    // Don't block article generation if image generation fails, just proceed text-only.
-                }
-            }
-            
-            let articleBodyHtml: string;
-
-            if (imagesForArticle.length > 0) {
-                // Phase 3: Visual Analysis & Layout Planning
-                // First, parse markdown to HTML to get an accurate representation of content blocks
-                const baseHtml = marked.parse(markdownContent);
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(`<div>${baseHtml}</div>`, 'text/html');
-                const contentWrapper = doc.body.firstChild as HTMLElement;
-
-                if (contentWrapper) {
-                    const insertionPoints = Array.from(contentWrapper.querySelectorAll('p, h2, h3, h4, ul, ol, blockquote, pre'));
-                    // Create a text representation of the blocks for the AI, ensuring consistency
-                    const contentBlocksForAI = insertionPoints.map(el => el.textContent || '');
-
-                    setLoadingMessage('Phase 3/4: Analyzing images and planning layout...');
-                    const imagePayload = imagesForArticle.map(img => ({ 
-                        filename: img.file.name, 
-                        base64: img.base64, 
-                        mimeType: img.file.type 
-                    }));
-                    
-                    const placementStrategy: PlacementStrategy = await planImagePlacements(
-                        ai, 
-                        contentBlocksForAI, // Pass the accurate block list
-                        imagePayload
-                    );
-
-                    // Now, inject images into the parsed document
-                    const placementsByIndex = new Map<number, typeof imagesForArticle>();
-                    const successfullyPlacedBodyImages = new Set<string>();
-
-                    placementStrategy.placements.forEach(p => {
-                        const imageFile = imagesForArticle.find(img => img.file.name === p.imageFilename);
-                        if (imageFile) {
-                            if (!placementsByIndex.has(p.afterParagraphIndex)) {
-                                placementsByIndex.set(p.afterParagraphIndex, []);
-                            }
-                            placementsByIndex.get(p.afterParagraphIndex)?.push(imageFile);
-                        }
-                    });
-
-                    placementsByIndex.forEach((imagesToPlace, insertionIndex) => {
-                        if (insertionIndex >= 0 && insertionIndex < insertionPoints.length) {
-                            const anchorElement = insertionPoints[insertionIndex];
-                            imagesToPlace.reverse().forEach(img => {
-                                const imgElement = doc.createElement('img');
-                                imgElement.src = `data:${img.file.type};base64,${img.base64}`;
-                                imgElement.alt = img.file.name;
-                                imgElement.className = 'body-image';
-                                anchorElement.after(imgElement);
-                                successfullyPlacedBodyImages.add(img.file.name);
-                            });
-                        }
-                    });
-
-                    // Fallback for any body images that couldn't be placed
-                    placementStrategy.placements.forEach(placement => {
-                        if (!successfullyPlacedBodyImages.has(placement.imageFilename)) {
-                            const imageFile = imagesForArticle.find(img => img.file.name === placement.imageFilename);
-                            if (imageFile) {
-                                console.warn(`Image '${imageFile.file.name}' could not be placed contextually, appending to the end.`);
-                                const imgElement = doc.createElement('img');
-                                imgElement.src = `data:${imageFile.file.type};base64,${imageFile.base64}`;
-                                imgElement.alt = imageFile.file.name;
-                                imgElement.className = 'body-image';
-                                contentWrapper.appendChild(imgElement);
-                            }
-                        }
-                    });
-                    
-                    // Place the header image at the beginning
-                    const headerImage = imagesForArticle.find(img => img.file.name === placementStrategy.headerImageFilename);
-                    if (headerImage) {
-                        const headerImgElement = doc.createElement('img');
-                        headerImgElement.src = `data:${headerImage.file.type};base64,${headerImage.base64}`;
-                        headerImgElement.alt = headerImage.file.name;
-                        headerImgElement.className = 'header-image';
-                        contentWrapper.prepend(headerImgElement);
-                    }
-                    
-                    articleBodyHtml = contentWrapper.innerHTML;
-                } else {
-                    articleBodyHtml = baseHtml; // Fallback
-                }
-            } else {
-                setLoadingMessage('Phase 3/4: Skipping image analysis...');
-                articleBodyHtml = marked.parse(markdownContent);
-            }
-
-            const articleContent = `<h1>${title}</h1>\n${articleBodyHtml}`;
-
-            // Phase 4: HTML Generation
-            setLoadingMessage('Phase 4/4: Generating final HTML article...');
-            const finalHtml = generateHtmlArticle(title, articleContent);
-            setGeneratedHtml(finalHtml);
+            setGeneratedTitle(result.title);
+            setGeneratedHtml(result.html);
 
         } catch (err: any) {
             console.error("Generation failed:", err);
-    
-            let displayError = "An unexpected error occurred. Please check the console for more details.";
-            const errorMessage = err.message ? err.message.toLowerCase() : '';
-        
-            if (errorMessage.includes("api key not valid")) {
-                displayError = "The provided API Key is not valid. Please check your environment variables and ensure it is correct.";
-            } else if (errorMessage.includes("token count exceeds") || errorMessage.includes("400 bad request")) {
-                displayError = "The provided transcript and/or images are too large for the model to process. Please try reducing the length of the transcript or the number/size of images.";
-            } else if (errorMessage.includes("quota")) {
-                displayError = "You have exceeded your API quota. Please check your Google AI Studio account and billing settings.";
-            } else if (err.toString().toLowerCase().includes('failed to fetch')) {
-                displayError = "A network error occurred. Please check your internet connection and try again.";
-            } else if (err.message) {
-                // Fallback to the specific error message if it exists
-                displayError = err.message;
-            }
-            
+            let displayError = err.message || "An unexpected error occurred.";
+            if (displayError.includes("API_KEY")) displayError = "Invalid API Key.";
             setError(displayError);
         } finally {
             setLoading(false);
             setLoadingMessage('');
         }
-    }, [transcript, images, ai, suggestedTitle]);
+    }, [transcript, images, ai, feedback, generatedHtml]);
 
     const handleReset = useCallback(() => {
-        // No confirmation prompt, just reset the state.
-        setImages(prevImages => {
-            // Revoke all existing object URLs before clearing state to prevent memory leaks
-            prevImages.forEach(image => URL.revokeObjectURL(image.previewUrl));
-            return []; // Return empty array to clear images
+        setImages(prev => {
+            prev.forEach(i => URL.revokeObjectURL(i.previewUrl));
+            return [];
         });
-        
         setTranscript('');
-        setSuggestedTitle('');
+        setFeedback('');
         setGeneratedHtml('');
         setGeneratedTitle('');
         setError(null);
         setLoading(false);
-        setLoadingMessage('');
-        setView('input');
+        setMobileTab('input');
+        setResetKey(prev => prev + 1); // Force remount of InputScreen
     }, []);
 
     const isGenerateDisabled = !transcript.trim() || loading || !ai;
 
     return (
-        <div className="min-h-screen text-slate-800 dark:text-slate-200">
-            <Header />
-            <main className="container mx-auto p-4 md:px-8 pb-16">
-                {view === 'input' && (
-                    <InputScreen
+        <div className="flex flex-col h-screen bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 overflow-hidden">
+            {/* Minimal Header */}
+            <header className="h-14 border-b border-slate-200 dark:border-slate-800 flex items-center px-4 md:px-6 bg-white dark:bg-slate-950 flex-shrink-0 z-10">
+                <div className="flex items-center gap-2">
+                    <div className="bg-indigo-600 text-white p-1.5 rounded-lg">
+                        <DocumentTextIcon className="h-5 w-5" />
+                    </div>
+                    <h1 className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">Post Perfect AI</h1>
+                </div>
+                <div className="ml-auto flex items-center space-x-2 text-xs font-medium">
+                   { process.env.API_KEY ? (
+                        <span className="text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded-full">
+                            System Ready
+                        </span>
+                   ) : (
+                        <span className="text-red-600 bg-red-50 px-2 py-1 rounded-full">API Key Missing</span>
+                   )}
+                </div>
+            </header>
+
+            {/* Workspace Area */}
+            <div className="flex-1 flex overflow-hidden relative">
+                
+                {/* Left Panel: Input (Desktop: w-1/3, Mobile: Full if active) */}
+                <div className={`
+                    flex-col border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 
+                    md:w-1/3 lg:w-[400px] xl:w-[450px] md:flex
+                    ${mobileTab === 'input' ? 'flex w-full absolute inset-0 z-20 md:static' : 'hidden'}
+                `}>
+                     <InputScreen
+                        key={resetKey}
                         transcript={transcript}
                         setTranscript={setTranscript}
-                        suggestedTitle={suggestedTitle}
-                        setSuggestedTitle={setSuggestedTitle}
+                        feedback={feedback}
+                        setFeedback={setFeedback}
                         images={images}
                         onImageUpload={handleImageUpload}
                         onTranscriptUpload={handleTranscriptUpload}
@@ -432,9 +204,15 @@ const App: React.FC = () => {
                         loading={loading}
                         isGenerateDisabled={isGenerateDisabled}
                         onProcessImageFiles={processImageFiles}
+                        hasGeneratedContent={!!generatedHtml}
                     />
-                )}
-                {view === 'output' && (
+                </div>
+
+                {/* Right Panel: Output (Desktop: Flex-1, Mobile: Full if active) */}
+                <div className={`
+                    flex-1 flex-col bg-slate-50 dark:bg-black/20 relative
+                    ${mobileTab === 'output' ? 'flex w-full absolute inset-0 z-20 md:static' : 'hidden md:flex'}
+                `}>
                     <OutputScreen
                         loading={loading}
                         loadingMessage={loadingMessage}
@@ -443,8 +221,25 @@ const App: React.FC = () => {
                         generatedTitle={generatedTitle}
                         onReset={handleReset}
                     />
-                )}
-            </main>
+                </div>
+            </div>
+
+            {/* Mobile Navigation Tabs */}
+            <div className="md:hidden h-14 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex text-xs font-medium z-30 flex-shrink-0">
+                <button 
+                    onClick={() => setMobileTab('input')}
+                    className={`flex-1 flex items-center justify-center gap-2 ${mobileTab === 'input' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'text-slate-500'}`}
+                >
+                    Editor
+                </button>
+                <button 
+                    onClick={() => setMobileTab('output')}
+                    className={`flex-1 flex items-center justify-center gap-2 ${mobileTab === 'output' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'text-slate-500'}`}
+                >
+                    Preview
+                    {generatedHtml && <span className="block w-2 h-2 rounded-full bg-indigo-500"></span>}
+                </button>
+            </div>
         </div>
     );
 };

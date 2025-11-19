@@ -1,4 +1,7 @@
 
+import type { PlacementStrategy } from '../types';
+
+declare const marked: { parse: (markdown: string) => string };
 
 const ARTICLE_TEMPLATE = `
 <!DOCTYPE html>
@@ -178,6 +181,109 @@ const ARTICLE_TEMPLATE = `
 </body>
 </html>
 `;
+
+/**
+ * Parses markdown and parses the resulting HTML to identify content blocks for the AI.
+ * @param markdownContent The raw markdown.
+ * @returns An object containing the base HTML and an array of text blocks.
+ */
+export function parseContentForAnalysis(markdownContent: string): { baseHtml: string, contentBlocks: string[] } {
+    const baseHtml = marked.parse(markdownContent);
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${baseHtml}</div>`, 'text/html');
+    const contentWrapper = doc.body.firstChild as HTMLElement;
+
+    const contentBlocks: string[] = [];
+    if (contentWrapper) {
+        const insertionPoints = Array.from(contentWrapper.querySelectorAll('p, h2, h3, h4, ul, ol, blockquote, pre'));
+        insertionPoints.forEach(el => contentBlocks.push(el.textContent || ''));
+    }
+    return { baseHtml, contentBlocks };
+}
+
+/**
+ * Injects images into the HTML structure based on the placement strategy.
+ */
+export function assembleArticleHtml(
+    title: string,
+    markdownContent: string,
+    images: { file: { name: string; type: string }; base64: string }[],
+    strategy: PlacementStrategy
+): string {
+    const baseHtml = marked.parse(markdownContent);
+    
+    // If no images to place (or no strategy), just return simple HTML
+    if (images.length === 0) {
+        const articleContent = `<h1>${title}</h1>\n${baseHtml}`;
+        return generateHtmlArticle(title, articleContent);
+    }
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<div>${baseHtml}</div>`, 'text/html');
+    const contentWrapper = doc.body.firstChild as HTMLElement;
+
+    if (contentWrapper) {
+        const insertionPoints = Array.from(contentWrapper.querySelectorAll('p, h2, h3, h4, ul, ol, blockquote, pre'));
+        const placementsByIndex = new Map<number, typeof images>();
+        const successfullyPlacedBodyImages = new Set<string>();
+
+        // Map images to their insertion indices
+        strategy.placements.forEach(p => {
+            const imageFile = images.find(img => img.file.name === p.imageFilename);
+            if (imageFile) {
+                if (!placementsByIndex.has(p.afterParagraphIndex)) {
+                    placementsByIndex.set(p.afterParagraphIndex, []);
+                }
+                placementsByIndex.get(p.afterParagraphIndex)?.push(imageFile);
+            }
+        });
+
+        // Inject Body Images
+        placementsByIndex.forEach((imagesToPlace, insertionIndex) => {
+            if (insertionIndex >= 0 && insertionIndex < insertionPoints.length) {
+                const anchorElement = insertionPoints[insertionIndex];
+                imagesToPlace.reverse().forEach(img => {
+                    const imgElement = doc.createElement('img');
+                    imgElement.src = `data:${img.file.type};base64,${img.base64}`;
+                    imgElement.alt = img.file.name;
+                    imgElement.className = 'body-image';
+                    anchorElement.after(imgElement);
+                    successfullyPlacedBodyImages.add(img.file.name);
+                });
+            }
+        });
+
+        // Fallback for unplaced body images (append to end)
+        strategy.placements.forEach(placement => {
+            if (!successfullyPlacedBodyImages.has(placement.imageFilename)) {
+                const imageFile = images.find(img => img.file.name === placement.imageFilename);
+                if (imageFile) {
+                    const imgElement = doc.createElement('img');
+                    imgElement.src = `data:${imageFile.file.type};base64,${imageFile.base64}`;
+                    imgElement.alt = imageFile.file.name;
+                    imgElement.className = 'body-image';
+                    contentWrapper.appendChild(imgElement);
+                }
+            }
+        });
+
+        // Inject Header Image
+        const headerImage = images.find(img => img.file.name === strategy.headerImageFilename);
+        if (headerImage) {
+            const headerImgElement = doc.createElement('img');
+            headerImgElement.src = `data:${headerImage.file.type};base64,${headerImage.base64}`;
+            headerImgElement.alt = headerImage.file.name;
+            headerImgElement.className = 'header-image';
+            contentWrapper.prepend(headerImgElement);
+        }
+
+        const articleContent = `<h1>${title}</h1>\n${contentWrapper.innerHTML}`;
+        return generateHtmlArticle(title, articleContent);
+    }
+
+    // Fallback if DOM parsing fails completely
+    return generateHtmlArticle(title, `<h1>${title}</h1>\n${baseHtml}`);
+}
 
 /**
  * Phase 4: Injects the generated article title and content into a professional HTML template.
